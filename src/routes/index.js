@@ -9,6 +9,7 @@ import videos from "../modules/videos/router.js";
 import MarketPlace from "../modules/market-place/router.js";
 import search from "../modules/search/router.js";
 import notifications from "../modules/notifications/router.js";
+import internal from "../modules/internal/router.js";
 
 const app = express();
 export default (app) => {
@@ -23,5 +24,8 @@ export default (app) => {
   apiV1Router.use("/marketPlace", MarketPlace);
   apiV1Router.use("/search", search);
   apiV1Router.use("/notifications", notifications);
+  if (process.env.ALLOW_EMAIL_TEST_ROUTE === "true") {
+    apiV1Router.use("/internal", internal);
+  }
   app.use("/api/v1", apiV1Router);
 };

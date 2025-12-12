@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { initSocketIo } from "./utils/socket.io.js";
+import { verifyTransporter } from "./utils/emailService.js";
 import { connectDB } from "./config/db.js";
 import routes from "./routes/index.js";
 import errorHandler from "./middleware/errorHandler.js";
@@ -25,6 +26,18 @@ async function startServer() {
     });
     const io = initSocketIo(server);
     app.set("io", io);
+    // Verify SMTP transporter connectivity (logs — non-fatal)
+    verifyTransporter()
+      .then((res) => {
+        if (!res.ok) {
+          console.warn("Email transporter verify returned:", res.message);
+        } else {
+          console.log("Email transporter verified successfully");
+        }
+      })
+      .catch((err) => {
+        console.error("Email transporter verification failed:", err);
+      });
   } catch (error) {
     console.error("Error starting server:", error);
     process.exit(1);

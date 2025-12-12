@@ -13,12 +13,20 @@ const createTransporter = () => {
   const greetingTimeout = parseInt(process.env.EMAIL_GREETING_TIMEOUT) || 5000;
   const socketTimeout = parseInt(process.env.EMAIL_SOCKET_TIMEOUT) || 5000;
 
-  return nodemailer.createTransport({
-    service: "gmail",
+  // Prefer explicit host/port so we can control behavior and log more clearly
+  const host = process.env.EMAIL_HOST || "smtp.gmail.com";
+  const port = parseInt(process.env.EMAIL_PORT) || 587;
+  const secure = process.env.EMAIL_SECURE === "true" || false;
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
+    requireTLS: true,
     // Avoid blocking for too long if SMTP cannot be reached
     connectionTimeout,
     greetingTimeout,
@@ -27,7 +35,34 @@ const createTransporter = () => {
       // In some hosting envs, TLS can cause handshake issues — keep it explicit
       rejectUnauthorized: false,
     },
+    logger: !!(process.env.EMAIL_DEBUG === "true"),
   });
+
+  // Helpful debug info for live logs
+  if (process.env.NODE_ENV === "production" || process.env.EMAIL_DEBUG === "true") {
+    console.log(`Email transporter configured: host=${host} port=${port} secure=${secure}`);
+  }
+
+  return transporter;
+};
+
+// Verify transporter connectivity (non-fatal). Useful to run at server start or via an admin endpoint.
+export const verifyTransporter = async () => {
+  const transporter = createTransporter();
+  if (!transporter) {
+    const msg = "Transporter not configured (EMAIL_USER / EMAIL_PASS missing)";
+    console.warn(msg);
+    return { ok: false, message: msg };
+  }
+
+  try {
+    // nodemailer verify() will attempt connection and authentication
+    await transporter.verify();
+    return { ok: true, message: "SMTP transporter is reachable" };
+  } catch (err) {
+    console.error("SMTP transporter verify failed:", err && err.message ? err.message : err);
+    return { ok: false, message: err && err.message ? err.message : String(err) };
+  }
 };
 
 export const sendPasswordResetEmail = async (email, resetCode, firstName) => {
@@ -63,7 +98,14 @@ export const sendPasswordResetEmail = async (email, resetCode, firstName) => {
     console.log("Password reset email sent successfully:", result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error("Error sending password reset email:", error);
+    console.error("Error sending password reset email:", error && error.message ? error.message : error, {
+      code: error && error.code ? error.code : undefined,
+    });
+    if (error && error.code === "ETIMEDOUT") {
+      console.warn(
+        "SMTP connection timed out — your hosting provider may be blocking outbound SMTP (port may be restricted)."
+      );
+    }
     throw new Error("Failed to send password reset email");
   }
 };
@@ -134,7 +176,14 @@ export const sendEmailVerification = async (
     console.log("Email verification sent successfully:", result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error("Error sending email verification:", error);
+      console.error("Error sending email verification:", error && error.message ? error.message : error, {
+        code: error && error.code ? error.code : undefined,
+      });
+      if (error && error.code === "ETIMEDOUT") {
+        console.warn(
+          "SMTP connection timed out — your hosting provider may be blocking outbound SMTP (port may be restricted)."
+        );
+      }
     throw new Error("Failed to send email verification");
   }
 };
