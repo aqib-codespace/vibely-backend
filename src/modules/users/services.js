@@ -68,7 +68,16 @@ export const initiatePasswordReset = async (email) => {
       resetToken: resetCode,
       resetTokenExpiry: expiryTime,
     });
-    await sendPasswordResetEmail(email, resetCode, user.firstName);
+    // Send password reset email asynchronously so the request doesn't block on SMTP issues
+    sendPasswordResetEmail(email, resetCode, user.firstName)
+      .then((result) => {
+        if (!result || !result.success) {
+          console.warn("sendPasswordResetEmail returned non-success result:", result);
+        }
+      })
+      .catch((err) => {
+        console.error("Background sendPasswordResetEmail failed:", err);
+      });
 
     return {
       success: true,

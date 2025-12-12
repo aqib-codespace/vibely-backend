@@ -2,11 +2,30 @@ import nodemailer from "nodemailer";
 import crypto from "crypto";
 
 const createTransporter = () => {
+  // If EMAIL_USER/PASS aren't set, return null and let callers handle it gracefully
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.warn("EMAIL_USER or EMAIL_PASS not set — emails will not be sent.");
+    return null;
+  }
+
+  // Configure timeouts to avoid excessive blocking when SMTP is unreachable
+  const connectionTimeout = parseInt(process.env.EMAIL_CONNECTION_TIMEOUT) || 5000;
+  const greetingTimeout = parseInt(process.env.EMAIL_GREETING_TIMEOUT) || 5000;
+  const socketTimeout = parseInt(process.env.EMAIL_SOCKET_TIMEOUT) || 5000;
+
   return nodemailer.createTransport({
     service: "gmail",
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
+    },
+    // Avoid blocking for too long if SMTP cannot be reached
+    connectionTimeout,
+    greetingTimeout,
+    socketTimeout,
+    tls: {
+      // In some hosting envs, TLS can cause handshake issues — keep it explicit
+      rejectUnauthorized: false,
     },
   });
 };
@@ -14,6 +33,11 @@ const createTransporter = () => {
 export const sendPasswordResetEmail = async (email, resetCode, firstName) => {
   try {
     const transporter = createTransporter();
+    if (!transporter) {
+      // Not configured to send emails in this environment; just log and return
+      console.warn("sendPasswordResetEmail skipped — transporter not configured");
+      return { success: false, message: "Email transporter not configured" };
+    }
 
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -59,6 +83,10 @@ export const sendEmailVerification = async (
 ) => {
   try {
     const transporter = createTransporter();
+    if (!transporter) {
+      console.warn("sendEmailVerification skipped — transporter not configured");
+      return { success: false, message: "Email transporter not configured" };
+    }
 
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -97,7 +125,12 @@ export const sendEmailVerification = async (
       `,
     };
 
-    const result = await transporter.sendMail(mailOptions);
+    const result = await Promise.race([
+      transporter.sendMail(mailOptions),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Email send timed out")), 10000)
+      ),
+    ]);
     console.log("Email verification sent successfully:", result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {

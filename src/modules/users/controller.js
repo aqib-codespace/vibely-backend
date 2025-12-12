@@ -36,6 +36,7 @@ import { NOTIFICATION_TYPE } from "../../constants/notification-enums.js";
 
 export const SignUp = async (req, res, next) => {
   try {
+    const startTime = Date.now();
     const validationResult = validateSignUpInputs(req.body);
     if (validationResult.error) {
       return next(apiError.badRequest(validationResult.msg));
@@ -68,31 +69,35 @@ export const SignUp = async (req, res, next) => {
 
     await createUser(newUser);
 
-    try {
-      await createNotification({
-        recipient: newUser._id,
-        sender: null,
-        type: NOTIFICATION_TYPE.WELCOME,
-        message: `Welcome to Vibely, ${firstName}! Warm hearted welcome from the Vibely team. We're glad you're here.`,
-      });
-    } catch (notifErr) {
+    // Fire-and-forget welcome notification so signup isn't delayed by notification delivery
+    createNotification({
+      recipient: newUser._id,
+      sender: null,
+      type: NOTIFICATION_TYPE.WELCOME,
+      message: `Welcome to Vibely, ${firstName}! Warm hearted welcome from the Vibely team. We're glad you're here.`,
+    }).catch((notifErr) => {
       console.error("Failed to create welcome notification:", notifErr);
-    }
+    });
 
-    try {
-      await sendEmailVerification(email, verificationCode, firstName);
-      res.status(201).json({
-        success: true,
-        message: MESSEGES.EMAIL_VERIFICATION_SENT,
+    // Send verification email asynchronously to avoid blocking signup on SMTP issues
+    sendEmailVerification(email, verificationCode, firstName)
+      .then((result) => {
+        if (!result || !result.success) {
+          console.warn("sendEmailVerification returned non-success result:", result);
+        }
+      })
+      .catch((emailError) => {
+        console.error("Background email sending failed:", emailError);
       });
-    } catch (emailError) {
-      console.error("Email sending failed:", emailError);
-      res.status(201).json({
-        success: true,
-        message:
-          "User created but verification email failed to send. Please request a new verification email.",
-        emailError: true,
-      });
+
+    // Respond immediately to the client
+    res.status(201).json({
+      success: true,
+      message: MESSEGES.EMAIL_VERIFICATION_SENT,
+    });
+
+    if (process.env.NODE_ENV === "production") {
+      console.log(`SignUp completed in ${Date.now() - startTime}ms for ${email}`);
     }
   } catch (error) {
     console.error("Error during sign-up:", error);
@@ -102,6 +107,7 @@ export const SignUp = async (req, res, next) => {
 
 export const signIn = async (req, res, next) => {
   try {
+    const startTime = Date.now();
     let { password, email } = req.body;
 
     const validationResult = validateSignInInputs(req.body);
@@ -142,25 +148,36 @@ export const signIn = async (req, res, next) => {
 
     try {
       if (!existingUser.hasLoggedInBefore) {
-        await createNotification({
+        // Fire-and-forget notification to avoid delaying sign-in
+        createNotification({
           recipient: existingUser._id,
           sender: null,
           type: NOTIFICATION_TYPE.WELCOME,
           message: `Welcome back to Vibely, ${existingUser.firstName}! Warm hearted welcome from the Vibely team.`,
+        }).catch((notifErr) => {
+          console.error("Failed to send first-login welcome notification:", notifErr);
         });
+
+        // We still persist the flag but don't wait on notification delivery
         await User.findByIdAndUpdate(existingUser._id, { hasLoggedInBefore: true });
       }
     } catch (notifErr) {
-      console.error("Failed to send first-login welcome notification:", notifErr);
+      console.error("Failed to update hasLoggedInBefore flag:", notifErr);
     }
 
-    return res.status(200).send({
+    const responsePayload = {
       isSuccess: true,
       message: MESSEGES.SIGNIN_SUCCESSFULL,
       token,
       refreshToken,
       data: existingUser,
-    });
+    };
+
+    if (process.env.NODE_ENV === "production") {
+      console.log(`SignIn completed in ${Date.now() - startTime}ms for ${email}`);
+    }
+
+    return res.status(200).send(responsePayload);
   } catch (error) {
     return next(
       apiError.internal({ message: MESSEGES.SERVER_ERROR }, "signin")
@@ -495,16 +512,21 @@ export const resendVerificationEmail = async (req, res, next) => {
     user.emailVerificationExpiry = verificationExpiry;
     await user.save();
 
-    try {
-      await sendEmailVerification(email, verificationCode, user.firstName);
-      res.status(200).json({
-        success: true,
-        message: MESSEGES.VERIFICATION_EMAIL_RESENT,
+    // Send the verification email in the background
+    sendEmailVerification(email, verificationCode, user.firstName)
+      .then((result) => {
+        if (!result || !result.success) {
+          console.warn("sendEmailVerification returned non-success result:", result);
+        }
+      })
+      .catch((emailError) => {
+        console.error("Background email sending failed:", emailError);
       });
-    } catch (emailError) {
-      console.error("Email sending failed:", emailError);
-      next(apiError.internal("Failed to send verification email"));
-    }
+
+    res.status(200).json({
+      success: true,
+      message: MESSEGES.VERIFICATION_EMAIL_RESENT,
+    });
   } catch (error) {
     console.error("Error resending verification email:", error);
     next(apiError.internal(MESSEGES.SERVER_ERROR));
